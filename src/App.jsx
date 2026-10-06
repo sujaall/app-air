@@ -7,6 +7,7 @@ import RecoveryPage from './pages/RecoveryPage';
 import SleepPage from './pages/SleepPage';
 import LogPage from './pages/LogPage';
 import AuthScreen from './pages/AuthScreen';
+import SetupPage from './pages/SetupPage';
 
 function AppRoutes() {
   const { loading } = useApp();
@@ -29,12 +30,14 @@ function AppRoutes() {
     );
   }
 
+  const hideNav = location.pathname === '/auth' || location.pathname === '/setup';
+
   return (
     <div className="app-layout">
-      {/* Main page animation wrapper */}
-      <div className="page-content" style={{ overflow: 'visible' }}>
+      <div className="page-content">
         <Routes location={location}>
           <Route path="/auth" element={<AuthScreen />} />
+          <Route path="/setup" element={<SetupPage onDone={() => window.location.href = '/auth'} />} />
           <Route path="/" element={<TodayPage />} />
           <Route path="/strain" element={<StrainPage />} />
           <Route path="/recovery" element={<RecoveryPage />} />
@@ -44,8 +47,7 @@ function AppRoutes() {
         </Routes>
       </div>
 
-      {/* Bottom Nav — hide on auth screen */}
-      {location.pathname !== '/auth' && <BottomNav />}
+      {!hideNav && <BottomNav />}
     </div>
   );
 }

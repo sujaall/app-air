@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { ScoreRing, MetricCard, Section, InsightCard, MiniBar, SkeletonCard, ProgressBar } from '../components/UI';
 import {
@@ -44,8 +45,9 @@ function computeSleepScore(totalHours, deepHours, remHours) {
 }
 
 export default function TodayPage() {
-  const { healthData, dataLoading, usingMock, user, refreshData } = useApp();
+  const { healthData, dataLoading, usingMock, user, refreshData, dataSource, isGHealthConnected } = useApp();
   const [visible, setVisible] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const t = setTimeout(() => setVisible(true), 100);
@@ -115,8 +117,43 @@ export default function TodayPage() {
         </div>
 
         {usingMock && (
-          <div style={{ background: 'rgba(255, 107, 53, 0.1)', border: '1px solid rgba(255,107,53,0.2)', borderRadius: 12, padding: '10px 14px', marginBottom: 16, fontSize: '0.8rem', color: 'var(--accent-strain)' }}>
-            📊 Showing demo data — connect Google Fit in settings for real data
+          <div style={{
+            background: 'linear-gradient(135deg, rgba(124,106,245,0.08), rgba(78,205,196,0.05))',
+            border: '1px solid rgba(124,106,245,0.2)',
+            borderRadius: 14, padding: '12px 16px', marginBottom: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: '1.1rem' }}>✨</span>
+              <div>
+                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Demo Mode</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Showing sample health data</div>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/auth')}
+              style={{
+                padding: '7px 14px', borderRadius: 99, border: 'none',
+                background: 'linear-gradient(135deg, #4285F4, #34A853)',
+                color: '#fff', fontSize: '0.75rem', fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              Connect →
+            </button>
+          </div>
+        )}
+        {!usingMock && dataSource === 'ghealth' && (
+          <div style={{ background: 'rgba(66,133,244,0.07)', border: '1px solid rgba(66,133,244,0.2)', borderRadius: 12, padding: '8px 14px', marginBottom: 16, fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="url(#ghGrad)"/><defs><linearGradient id="ghGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#4285F4"/><stop offset="100%" stopColor="#34A853"/></linearGradient></defs></svg>
+            <span style={{ background: 'linear-gradient(90deg, #4285F4, #34A853)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Live data from <strong>Google Health API</strong></span>
+          </div>
+        )}
+        {!usingMock && dataSource === 'google' && (
+          <div style={{ background: 'rgba(66,133,244,0.08)', border: '1px solid rgba(66,133,244,0.2)', borderRadius: 12, padding: '8px 14px', marginBottom: 16, fontSize: '0.78rem', color: '#4285F4', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+            Live data from <strong>Google Fit</strong> (deprecated)
           </div>
         )}
 

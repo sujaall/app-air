@@ -1,101 +1,230 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import {
-  getStoredToken, getStoredUser, storeUser, signOut,
-  handleOAuthCallback, fetchUserInfo, fetchAllTodayData,
-  getMockData, isUsingMockData,
-} from '../services/googleFit';
+import { getMockData } from '../services/googleFit';
+
+// Lazy-load API services so they never block the initial render
+let googleFitService = null;
+let gHealthService = null;
+
+async function getGoogleFit() {
+  if (!googleFitService) googleFitService = await import('../services/googleFit');
+  return googleFitService;
+}
+
+async function getGHealth() {
+  if (!gHealthService) gHealthService = await import('../services/fitbit');
+  return gHealthService;
+}
 
 const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
   const [token, setToken] = useState(null);
+  const [ghealthToken, setGHealthToken] = useState(null);
   const [user, setUser] = useState(null);
-  const [healthData, setHealthData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Start with demo data immediately — no loading spinner needed
+  const [healthData, setHealthData] = useState(() => getMockData());
+  const [loading, setLoading] = useState(false); // no longer blocks UI
   const [dataLoading, setDataLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [usingMock, setUsingMock] = useState(false);
+  const [usingMock, setUsingMock] = useState(true);
+  const [dataSource, setDataSource] = useState('mock');
+  const [initialized, setInitialized] = useState(false);
 
-  // Handle OAuth callback on mount
+  // ── Bootstrap: check for stored/callback tokens ─────────────
   useEffect(() => {
-    const oauthData = handleOAuthCallback();
-    if (oauthData) {
-      setToken(oauthData);
-    } else {
-      const stored = getStoredToken();
-      if (stored) setToken(stored);
-    }
+    let cancelled = false;
 
-    const storedUser = getStoredUser();
-    if (storedUser) setUser(storedUser);
+    const TIMEOUT_MS = 4000; // never hang more than 4s
 
-    setLoading(false);
+    const init = async () => {
+      try {
+        // Race against a timeout so a slow network never freezes the app
+        const ghModule = await Promise.race([
+          getGHealth(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), TIMEOUT_MS)),
+        ]);
+
+        if (cancelled) return;
+
+        // Check for Google Health OAuth callback (?code=...)
+        let ghToken = null;
+        try {
+          ghToken = await Promise.race([
+            ghModule.handleGHealthCallback(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Token exchange timed out')), TIMEOUT_MS)),
+          ]);
+        } catch (callbackErr) {
+          // Surface the error visibly — don't silently fall back
+          console.error('Auth callback failed:', callbackErr.message);
+          // Store it so the auth screen can show it
+          if (!localStorage.getItem('bevel_auth_error')) {
+            localStorage.setItem('bevel_auth_error', callbackErr.message);
+          }
+        }
+
+        if (cancelled) return;
+
+        if (ghToken) {
+          setGHealthToken(ghToken);
+          setDataSource('ghealth');
+          setInitialized(true);
+          return;
+        }
+
+        // Restore stored Google Health token
+        const storedGH = ghModule.getGHealthToken();
+        if (storedGH) {
+          // Try to refresh if expired — but don't block startup
+          if (Date.now() >= storedGH.expiresAt) {
+            ghModule.refreshGHealthToken(storedGH)
+              .then(refreshed => { if (refreshed && !cancelled) setGHealthToken(refreshed); })
+              .catch(() => {});
+          } else {
+            setGHealthToken(storedGH);
+            setDataSource('ghealth');
+          }
+        }
+
+        // Check legacy Google Fit
+        const gfModule = await getGoogleFit();
+        if (cancelled) return;
+
+        const gfCallback = gfModule.handleOAuthCallback();
+        if (gfCallback) {
+          setToken(gfCallback);
+          setDataSource('google');
+        } else {
+          const storedGF = gfModule.getStoredToken();
+          if (storedGF) {
+            setToken(storedGF);
+            setDataSource('google');
+          }
+        }
+
+        // Restore saved user
+        const savedUser = ghModule.getGHealthUser() || gfModule.getStoredUser();
+        if (savedUser && !cancelled) setUser(savedUser);
+
+      } catch (e) {
+        // Any error during init (network, timeout, etc.) → silently use demo data
+        console.warn('Bevel: init error, using demo data', e.message);
+      } finally {
+        if (!cancelled) setInitialized(true);
+      }
+    };
+
+    init();
+    return () => { cancelled = true; };
   }, []);
 
-  // Fetch user info when token changes
-  useEffect(() => {
-    if (token && !user) {
-      fetchUserInfo(token.accessToken)
-        .then(u => {
-          setUser(u);
-          storeUser(u);
-        })
-        .catch(console.error);
-    }
-  }, [token, user]);
-
-  // Fetch health data
+  // ── Fetch health data when tokens are available ──────────────
   const refreshData = useCallback(async () => {
-    if (isUsingMockData()) {
-      setUsingMock(true);
-      setHealthData(getMockData());
+    // Google Health API
+    if (ghealthToken) {
+      setDataLoading(true);
+      setError(null);
+      try {
+        const ghModule = await getGHealth();
+        let activeToken = ghealthToken;
+        if (Date.now() >= ghealthToken.expiresAt) {
+          const refreshed = await ghModule.refreshGHealthToken(ghealthToken);
+          if (refreshed) { setGHealthToken(refreshed); activeToken = refreshed; }
+          else throw new Error('Session expired — please reconnect.');
+        }
+        const data = await ghModule.fetchAllGHealthData(activeToken.accessToken);
+        setHealthData(data);
+        setUsingMock(false);
+        setDataSource('ghealth');
+      } catch (err) {
+        setError(err.message);
+        setUsingMock(true);
+        setHealthData(getMockData());
+        setDataSource('mock');
+      } finally {
+        setDataLoading(false);
+      }
       return;
     }
 
-    if (!token) return;
-
-    setDataLoading(true);
-    setError(null);
-    try {
-      const data = await fetchAllTodayData(token.accessToken);
-      setHealthData(data);
-    } catch (err) {
-      setError(err.message);
-      // Fall back to mock data
-      setUsingMock(true);
-      setHealthData(getMockData());
-    } finally {
-      setDataLoading(false);
+    // Legacy Google Fit
+    if (token) {
+      setDataLoading(true);
+      setError(null);
+      try {
+        const gfModule = await getGoogleFit();
+        if (gfModule.isUsingMockData()) throw new Error('No Google Fit credentials');
+        const data = await gfModule.fetchAllTodayData(token.accessToken);
+        setHealthData(data);
+        setUsingMock(false);
+        setDataSource('google');
+      } catch (err) {
+        setError(err.message);
+        setUsingMock(true);
+        setHealthData(getMockData());
+        setDataSource('mock');
+      } finally {
+        setDataLoading(false);
+      }
+      return;
     }
-  }, [token]);
+
+    // No credentials — demo data (already set as default)
+    setUsingMock(true);
+    setHealthData(getMockData());
+    setDataSource('mock');
+  }, [ghealthToken, token]);
 
   useEffect(() => {
-    if (token || isUsingMockData()) {
+    if (initialized && (ghealthToken || token)) {
       refreshData();
-    } else if (!loading) {
-      // No token and not using mock — show demo data anyway
-      setUsingMock(true);
-      setHealthData(getMockData());
     }
-  }, [token, loading, refreshData]);
+  }, [ghealthToken, token, initialized, refreshData]);
 
-  const handleSignOut = () => {
-    signOut();
+  // ── Fetch user info ──────────────────────────────────────────
+  useEffect(() => {
+    if (ghealthToken && !user) {
+      getGHealth()
+        .then(m => m.fetchGHealthUserInfo(ghealthToken.accessToken))
+        .then(u => { setUser(u); getGHealth().then(m => m.storeGHealthUser(u)); })
+        .catch(() => {});
+    }
+  }, [ghealthToken, user]);
+
+  useEffect(() => {
+    if (token && !user) {
+      getGoogleFit()
+        .then(m => m.fetchUserInfo(token.accessToken))
+        .then(u => { setUser(u); getGoogleFit().then(m => m.storeUser(u)); })
+        .catch(() => {});
+    }
+  }, [token, user]);
+
+  // ── Sign out ─────────────────────────────────────────────────
+  const handleSignOut = async () => {
+    const [gf, gh] = await Promise.all([getGoogleFit(), getGHealth()]);
+    gf.signOut();
+    gh.signOutGHealth();
     setToken(null);
+    setGHealthToken(null);
     setUser(null);
     setHealthData(getMockData());
     setUsingMock(true);
+    setDataSource('mock');
   };
 
   const value = {
     token, setToken,
+    ghealthToken, setGHealthToken,
     user, setUser,
     healthData, setHealthData,
-    loading, dataLoading,
-    error, usingMock,
+    loading,        // always false now
+    dataLoading,
+    error, usingMock, dataSource,
     refreshData,
     signOut: handleSignOut,
-    isAuthenticated: !!token && !isUsingMockData(),
+    isAuthenticated: !!ghealthToken || !!token,
+    isGHealthConnected: !!ghealthToken,
+    isGoogleFitConnected: !!token,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
